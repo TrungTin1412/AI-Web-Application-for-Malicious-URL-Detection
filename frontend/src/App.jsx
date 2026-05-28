@@ -11,6 +11,11 @@ const RISK_TONES = {
   suspicious: "risk-high",
   "needs review": "risk-medium",
   "verification unavailable": "risk-medium",
+  inconclusive: "risk-medium",
+  benign: "risk-safe",
+  phishing: "risk-high",
+  malware: "risk-high",
+  defacement: "risk-high",
 };
 
 function formatPercent(value) {
@@ -40,6 +45,109 @@ function renderSourceText(source) {
     return "Static HTML";
   }
   return "Unavailable";
+}
+
+function buildFinalConclusion(result, contentCheck) {
+  if (!result) {
+    return null;
+  }
+
+  const effectiveRiskLevel = contentCheck?.risk_level || result.summary.risk_level;
+  const effectivePredictedLabel = contentCheck?.predicted_label || result.summary.predicted_label;
+
+  if (!contentCheck || contentCheck.fetch_status === "skipped") {
+    return {
+      level: result.summary.predicted_label,
+      title: labelTitle(result.summary.predicted_label),
+      explanation:
+        result.summary.explanation ||
+        "The final conclusion currently follows the hybrid model because no content check decision is available.",
+      source: "Hybrid model decision",
+      confidence: result.summary.confidence,
+      riskLevel: result.summary.risk_level,
+      verificationStatus: "Model only",
+    };
+  }
+
+  if (contentCheck.fetch_status !== "success") {
+    if (effectiveRiskLevel === "uncertain") {
+      return {
+        level: "inconclusive",
+        title: "Inconclusive",
+        explanation:
+          contentCheck.explanation ||
+          "The URL-based prediction is uncertain, and page content could not be fetched for verification.",
+        source: "Verification unavailable",
+        confidence: result.summary.confidence,
+        riskLevel: "verification unavailable",
+        verificationStatus: "Verification unavailable",
+      };
+    }
+
+    return {
+      level: effectivePredictedLabel,
+      title: labelTitle(effectivePredictedLabel),
+      explanation:
+        contentCheck.explanation ||
+        "Page content could not be verified, so the final conclusion falls back to the hybrid model output.",
+      source: "Hybrid model decision",
+      confidence: result.summary.confidence,
+      riskLevel: "verification unavailable",
+      verificationStatus: "Verification unavailable",
+    };
+  }
+
+  if (contentCheck.fetch_status === "success") {
+    const consistency = contentCheck.content_consistency;
+    const finalRiskLevel = contentCheck.final_decision || effectiveRiskLevel;
+
+    if (effectiveRiskLevel === "uncertain" && consistency === "low") {
+      return {
+        level: "inconclusive",
+        title: "Inconclusive",
+        explanation:
+          contentCheck.explanation ||
+          "The URL-based prediction is uncertain and the fetched page content does not support a confident conclusion.",
+        source: "Content-verified decision",
+        confidence: null,
+        riskLevel: finalRiskLevel,
+        verificationStatus: "Not supported",
+      };
+    }
+
+    let verificationStatus = "Model only";
+    if (consistency === "high") {
+      verificationStatus = "Confirmed";
+    } else if (consistency === "medium") {
+      verificationStatus = "Weakly supported";
+    } else if (consistency === "low") {
+      verificationStatus = "Not supported";
+    }
+
+    return {
+      level: effectivePredictedLabel,
+      title: labelTitle(effectivePredictedLabel),
+      explanation:
+        contentCheck.explanation ||
+        "The final conclusion combines the URL prediction with content verification.",
+      source: "Content-verified decision",
+      confidence: null,
+      riskLevel: finalRiskLevel,
+      verificationStatus,
+    };
+  }
+
+  return {
+    level: result.summary.predicted_label,
+    title: labelTitle(result.summary.predicted_label),
+    explanation:
+      result.summary.explanation ||
+      "The final conclusion currently follows the hybrid model because no content check decision is available.",
+    source: "Hybrid model decision",
+    confidence: result.summary.confidence,
+    riskLevel: result.summary.risk_level,
+    verificationStatus: "Model only",
+  };
 }
 
 async function parseJsonResponse(response) {
@@ -104,17 +212,6 @@ function ContentCheckPanel({ contentCheck, onCheckContent, isCheckingContent, ca
               </span>
             ) : null}
           </div>
-          {contentCheck.final_decision ? (
-            <div className="final-conclusion">
-              <div>
-                <span className="metric-label">Final conclusion</span>
-                <strong>{statusText(contentCheck.final_decision)}</strong>
-              </div>
-              <span className={`risk-pill ${RISK_TONES[contentCheck.final_decision] || "risk-medium"}`}>
-                {statusText(contentCheck.final_decision)}
-              </span>
-            </div>
-          ) : null}
           <div className="content-meta">
             <div>
               <span className="metric-label">Page title</span>
@@ -198,7 +295,6 @@ function ModelCard({ title, model }) {
           {statusText(model.risk_level)}
         </span>
       </div>
-      {model.explanation ? <p className="explanation">{model.explanation}</p> : null}
       <ProbabilityList probabilities={model.probabilities} />
     </article>
   );
@@ -211,6 +307,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingContent, setIsCheckingContent] = useState(false);
+  const finalConclusion = buildFinalConclusion(result, contentCheck);
 
   async function runContentCheck(predictionResult, force = true) {
     if (!predictionResult) {
@@ -333,23 +430,23 @@ export default function App() {
         {result ? (
           <section className="results-grid">
             <article className="panel summary-card">
-              <div className="panel-topline">Primary assessment</div>
+              <div className="panel-topline">Final conclusion</div>
               <div className="summary-main">
                 <div>
-                  <h2>{labelTitle(result.summary.predicted_label)}</h2>
+                  <h2>{finalConclusion?.title || "Unknown"}</h2>
                   <p className="muted">Normalized URL: {result.normalized_url}</p>
                 </div>
                 <span
-                  className={`risk-pill ${RISK_TONES[result.summary.risk_level] || "risk-low"}`}
+                  className={`risk-pill ${RISK_TONES[finalConclusion?.level] || "risk-low"}`}
                 >
-                  {statusText(result.summary.risk_level)}
+                  {finalConclusion?.title || "Unknown"}
                 </span>
               </div>
-              <p className="summary-explanation">{result.summary.explanation}</p>
+              <p className="summary-explanation">{finalConclusion?.explanation}</p>
               <div className="summary-meta">
                 <div>
-                  <span className="metric-label">Primary model</span>
-                  <strong>{labelTitle(result.meta.primary_model)}</strong>
+                  <span className="metric-label">Decision source</span>
+                  <strong>{finalConclusion?.source || "Unknown"}</strong>
                 </div>
                 <div>
                   <span className="metric-label">Cache</span>
@@ -357,7 +454,19 @@ export default function App() {
                 </div>
                 <div>
                   <span className="metric-label">Confidence</span>
-                  <strong>{formatPercent(result.summary.confidence)}</strong>
+                  <strong>
+                    {typeof finalConclusion?.confidence === "number"
+                      ? formatPercent(finalConclusion.confidence)
+                      : "Verified by content check"}
+                  </strong>
+                </div>
+                <div>
+                  <span className="metric-label">Risk level</span>
+                  <strong>{finalConclusion?.riskLevel ? statusText(finalConclusion.riskLevel) : "Unknown"}</strong>
+                </div>
+                <div>
+                  <span className="metric-label">Verification status</span>
+                  <strong>{finalConclusion?.verificationStatus || "Unknown"}</strong>
                 </div>
               </div>
             </article>

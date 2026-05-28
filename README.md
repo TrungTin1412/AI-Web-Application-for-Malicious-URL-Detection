@@ -61,6 +61,7 @@ pip install fastapi uvicorn joblib numpy scikit-learn pydantic
 Notes:
 
 - `requirements.txt` currently does not include all runtime dependencies used by the backend, so the second install command is still needed.
+- After installing dependencies, run `python smoke_test_tokenizer.py` once to verify the URL tokenizer and vocab load correctly.
 - If you want to use `content check` on JavaScript-rendered pages, install Playwright as well:
 
 ```powershell
